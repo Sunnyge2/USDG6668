@@ -1,7 +1,7 @@
 import os
 import json
 import time
-import asyncio
+import threading
 import requests
 import websocket
 from datetime import datetime
@@ -25,22 +25,28 @@ if not CHAT_ID:
 THRESHOLD_HIGH = float(os.environ.get("THRESHOLD_HIGH", "10000"))
 THRESHOLD_LOW = float(os.environ.get("THRESHOLD_LOW", "9998"))
 
+# 监控的代币（仅 Solana）
 TOKENS = {
     "USDG": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
     "PYUSD": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 }
+
 SOLANA_CHAIN_INDEX = "501"
+
+# OKX DEX WebSocket 地址
 DEX_WS_URL = "wss://wsdex.okx.com/ws/v6/dex"
+
+# OKX 交易所 API（获取买一价格）
 OKX_API_URL = "https://www.okx.com"
 
 # ============================================================
-#  Telegram Bot
+#  初始化 Telegram Bot（增加连接池）
 # ============================================================
 request = HTTPXRequest(connection_pool_size=8)
 bot = Bot(token=TELEGRAM_TOKEN, request=request)
 
 # ============================================================
-#  获取价格
+#  获取交易所买一价格（同步）
 # ============================================================
 def get_bid_price(symbol):
     url = f"{OKX_API_URL}/api/v5/market/books"
@@ -64,9 +70,9 @@ def get_all_prices():
     }
 
 # ============================================================
-#  发送提醒
+#  发送 Telegram 提醒（同步，不再使用 asyncio）
 # ============================================================
-async def send_alert(symbol, amount_usd, trade_info, prices, alert_type):
+def send_alert(symbol, amount_usd, trade_info, prices, alert_type):
     alert_emoji = "🚨" if alert_type == "high" else "⚠️"
     alert_text = "超过上限" if alert_type == "high" else "低于下限"
     message = f"""
@@ -89,21 +95,38 @@ async def send_alert(symbol, amount_usd, trade_info, prices, alert_type):
 • 哈希: {trade_info.get('tx_hash', 'N/A')}
 """
     try:
-        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode=ParseMode.MARKDOWN)
+        bot.send_message(chat_id=CHAT_ID, text=message, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         print(f"发送消息失败: {e}")
 
 # ============================================================
-#  WebSocket 回调
+#  心跳线程（发送应用层 ping）
+# ============================================================
+def send_ping(ws):
+    while True:
+        time.sleep(20)  # 每 20 秒发送一次 ping
+        try:
+            ws.send(json.dumps({"op": "ping"}))
+            print("发送 ping")
+        except Exception as e:
+            print(f"发送 ping 失败: {e}")
+            break
+
+# ============================================================
+#  WebSocket 回调函数
 # ============================================================
 def on_message(ws, message):
     try:
         data = json.loads(message)
+        # 忽略 pong 响应
+        if data.get("op") == "pong":
+            return
         if "data" in data:
             for item in data.get("data", []):
                 chain_idx = item.get("chainIndex", "")
                 if chain_idx != SOLANA_CHAIN_INDEX:
                     continue
+
                 changed_info = item.get("changedTokenInfo", {})
                 token_address = changed_info.get("tokenContractAddress", "")
                 amount = float(changed_info.get("amount", 0))
@@ -111,8 +134,10 @@ def on_message(ws, message):
                 volume = float(item.get("volume", 0))
                 tx_hash = item.get("txHashUrl", "")
                 trade_type = item.get("type", "")
+
                 if trade_type.lower() != "sell":
                     continue
+
                 symbol_name = None
                 for name, addr in TOKENS.items():
                     if addr.lower() == token_address.lower():
@@ -120,6 +145,8 @@ def on_message(ws, message):
                         break
                 if not symbol_name:
                     continue
+
+                # 判断是否超出阈值范围
                 alert_type = None
                 if volume >= THRESHOLD_HIGH:
                     alert_type = "high"
@@ -127,9 +154,10 @@ def on_message(ws, message):
                     alert_type = "low"
                 else:
                     continue
+
                 prices = get_all_prices()
                 trade_info = {"amount": amount, "price": price, "tx_hash": tx_hash}
-                asyncio.create_task(send_alert(symbol_name, volume, trade_info, prices, alert_type))
+                send_alert(symbol_name, volume, trade_info, prices, alert_type)
     except Exception as e:
         print(f"处理消息错误: {e}")
 
@@ -138,26 +166,35 @@ def on_error(ws, error):
 
 def on_close(ws, close_status_code, close_msg):
     print(f"WebSocket 已关闭: {close_status_code} - {close_msg}")
+    # 5 秒后重连
     time.sleep(5)
     start_websocket()
 
 def on_open(ws):
+    # 启动心跳线程
+    threading.Thread(target=send_ping, args=(ws,), daemon=True).start()
+    # 订阅 Solana 链交易数据
     subscribe_msg = {
         "op": "subscribe",
-        "args": [{"channel": "dex-market-trades", "chainIndex": SOLANA_CHAIN_INDEX}]
+        "args": [{
+            "channel": "dex-market-trades",
+            "chainIndex": SOLANA_CHAIN_INDEX
+        }]
     }
     ws.send(json.dumps(subscribe_msg))
     print(f"已订阅 Solana 链 (chainIndex: {SOLANA_CHAIN_INDEX})")
+
+    # 发送启动通知（同步）
     try:
-        asyncio.run(bot.send_message(
+        bot.send_message(
             chat_id=CHAT_ID,
             text=f"🤖 OKX DEX 监控 Bot 启动\n监控 Solana 链 USDG/PYUSD\n阈值: ${THRESHOLD_LOW:,.2f} ~ ${THRESHOLD_HIGH:,.2f}"
-        ))
+        )
     except Exception as e:
         print(f"启动通知失败: {e}")
 
 # ============================================================
-#  启动 WebSocket（修正：参数移到 run_forever）
+#  启动 WebSocket（不再传入 ping_interval）
 # ============================================================
 def start_websocket():
     ws = websocket.WebSocketApp(
@@ -167,7 +204,7 @@ def start_websocket():
         on_error=on_error,
         on_close=on_close
     )
-    ws.run_forever(ping_interval=20, ping_timeout=10)  # 这里设置心跳
+    ws.run_forever()
 
 # ============================================================
 #  主程序
