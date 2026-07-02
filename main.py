@@ -12,7 +12,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 INTERVAL = int(os.getenv("INTERVAL", "60"))
 
-# OKX API 配置
 OKX_API_KEY = os.getenv("OKX_API_KEY")
 OKX_API_SECRET = os.getenv("OKX_API_SECRET")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE")
@@ -26,13 +25,11 @@ PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 
 CEX_PAIRS = ["USDC-USDT", "USDG-USDT", "PYUSD-USDT"]
 
-def get_signature(method: str, request_path: str):
+def get_signature(method, full_path):
     timestamp = str(int(time.time() * 1000))
-    message = timestamp + method + request_path
-    mac = hmac.new(bytes(OKX_API_SECRET, encoding='utf-8'), 
-                   bytes(message, encoding='utf-8'), 
-                   digestmod=hashlib.sha256)
-    signature = base64.b64encode(mac.digest()).decode('utf-8')
+    message = timestamp + method + full_path
+    mac = hmac.new(OKX_API_SECRET.encode(), message.encode(), hashlib.sha256)
+    signature = base64.b64encode(mac.digest()).decode()
     return timestamp, signature
 
 def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
@@ -49,10 +46,9 @@ def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
         "priceImpactProtectionPercent": "100"
     }
     
-    # 构造用于签名的 path（query string 必须排序）
-    sorted_params = sorted(params.items())
-    query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
-    full_path = f"/api/v6/dex/aggregator/quote?{query_string}"
+    # 关键：query string 必须排序用于签名
+    sorted_query = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
+    full_path = f"/api/v6/dex/aggregator/quote?{sorted_query}"
     
     timestamp, signature = get_signature("GET", full_path)
     
@@ -72,13 +68,13 @@ def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
             route = quote.get("dexRouterList", [{}])[0].get("dexName", "OKX")
             return round(to_amount, 4), route
         else:
-            return None, r.get("msg", f"Code:{r.get('code')}")
+            return None, r.get("msg", f"Code: {r.get('code')}")
     except Exception as e:
         return None, str(e)
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
-    print("Bot 启动 - OKX DEX 签名修正版")
+    print("Bot 启动 - OKX DEX 签名最终版")
 
     while True:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -87,7 +83,7 @@ async def main():
         usdg_out, usdg_info = get_okx_dex_amount_out(USDG, USDC, 10000)
         pyusd_out, pyusd_info = get_okx_dex_amount_out(PYUSD, USDC, 10000)
 
-        msg += "**10000 个输入可得**\n"
+        msg += "**10000 个输入在 OKX DEX 可得**\n"
         msg += f"10000 USDG → {usdg_out if usdg_out else 'N/A'} USDC  ({usdg_info})\n"
         msg += f"10000 PYUSD → {pyusd_out if pyusd_out else 'N/A'} USDC  ({pyusd_info})\n\n"
 
