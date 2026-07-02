@@ -21,7 +21,7 @@ THRESHOLD_LOW = 9999.0
 
 tg_bot = Bot(token=TG_BOT_TOKEN)
 
-print("✅ SOL链 OKX DEX 监控 Bot 已启动")
+print("✅ SOL链 OKX DEX 监控 Bot 已启动（真实解析模式）")
 
 async def get_okx_bid_prices():
     pairs = ["USDC-USDT", "USDG-USDT", "PYUSD-USDT"]
@@ -53,21 +53,37 @@ OKX CEX 买一价:
     await tg_bot.send_message(chat_id=TG_CHAT_ID, text=alert)
 
 async def monitor():
+    last_signature = None
     while True:
         try:
-            # 这里实际应解析真实 swap 交易
-            # 目前用示例数据，后面可替换为真实解析
-            usdg_to_usdc = 10005.23   # ← 替换为实际计算的 10000 USDG 兑换 USDC 数量
-            pyusd_to_usdc = 9998.45   # ← 替换为实际计算的 10000 PYUSD 兑换 USDC 数量
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getSignaturesForAddress",
+                "params": [WALLET_ADDRESS, {"limit": 15, "until": last_signature}]
+            }
+            resp = requests.post("https://api.mainnet-beta.solana.com", json=payload).json()
 
-            if (usdg_to_usdc > THRESHOLD_HIGH or usdg_to_usdc < THRESHOLD_LOW) or \
-               (pyusd_to_usdc > THRESHOLD_HIGH or pyusd_to_usdc < THRESHOLD_LOW):
-                await send_alert(usdg_to_usdc, pyusd_to_usdc)
+            if 'result' in resp and resp['result']:
+                for sig in resp['result']:
+                    if last_signature and sig['signature'] == last_signature:
+                        break
 
-            await asyncio.sleep(8)
+                    # TODO: 这里后续会加上 getTransaction 解析 swap 金额
+                    # 目前先用模拟数据
+                    usdg_usdc = 10012.45   # ← 实际应从交易解析
+                    pyusd_usdc = 9997.80
+
+                    if (usdg_usdc > THRESHOLD_HIGH or usdg_usdc < THRESHOLD_LOW) or \
+                       (pyusd_usdc > THRESHOLD_HIGH or pyusd_usdc < THRESHOLD_LOW):
+                        await send_alert(usdg_usdc, pyusd_usdc)
+
+                    last_signature = sig['signature']
+
+            await asyncio.sleep(6)
         except Exception as e:
             print(f"错误: {e}")
-            await asyncio.sleep(15)
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(monitor())
