@@ -12,29 +12,30 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 INTERVAL = int(os.getenv("INTERVAL", "60"))
 
+# OKX 配置
 OKX_API_KEY = os.getenv("OKX_API_KEY")
 OKX_API_SECRET = os.getenv("OKX_API_SECRET")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE")
 
 DEX_URL = "https://web3.okx.com/api/v6/dex/aggregator/quote"
-SOLANA_CHAIN = "501"
 
+SOLANA_CHAIN = "501"
 USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDG = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
 PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 
 CEX_PAIRS = ["USDC-USDT", "USDG-USDT", "PYUSD-USDT"]
 
-def get_signature(method, full_path):
+def get_okx_signature(method, request_path):
     timestamp = str(int(time.time() * 1000))
-    message = timestamp + method + full_path
-    mac = hmac.new(OKX_API_SECRET.encode(), message.encode(), hashlib.sha256)
-    signature = base64.b64encode(mac.digest()).decode()
+    message = timestamp + method + request_path
+    mac = hmac.new(OKX_API_SECRET.encode('utf-8'), message.encode('utf-8'), hashlib.sha256)
+    signature = base64.b64encode(mac.digest()).decode('utf-8')
     return timestamp, signature
 
 def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
     decimals = 6
-    amount_raw = str(int(amount_human * 10 ** decimals))
+    amount_raw = str(int(amount_human * 10**decimals))
     
     params = {
         "chainIndex": SOLANA_CHAIN,
@@ -46,11 +47,11 @@ def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
         "priceImpactProtectionPercent": "100"
     }
     
-    # 关键：query string 必须排序用于签名
-    sorted_query = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
-    full_path = f"/api/v6/dex/aggregator/quote?{sorted_query}"
+    # 构造用于签名的完整 path
+    query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+    request_path = f"/api/v6/dex/aggregator/quote?{query_string}"
     
-    timestamp, signature = get_signature("GET", full_path)
+    timestamp, signature = get_okx_signature("GET", request_path)
     
     headers = {
         "OK-ACCESS-KEY": OKX_API_KEY,
@@ -61,20 +62,22 @@ def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
     }
     
     try:
-        r = requests.get(DEX_URL, params=params, headers=headers, timeout=20).json()
+        resp = requests.get(DEX_URL, params=params, headers=headers, timeout=20)
+        r = resp.json()
+        
         if r.get("code") == "0" and r.get("data"):
             quote = r["data"][0]
             to_amount = int(quote.get("toTokenAmount") or 0) / (10 ** decimals)
             route = quote.get("dexRouterList", [{}])[0].get("dexName", "OKX")
             return round(to_amount, 4), route
         else:
-            return None, r.get("msg", f"Code: {r.get('code')}")
+            return None, r.get("msg", f"Code:{r.get('code')}")
     except Exception as e:
         return None, str(e)
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
-    print("Bot 启动 - OKX DEX 签名最终版")
+    print("Bot 启动 - OKX DEX 签名版 v2")
 
     while True:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -83,7 +86,7 @@ async def main():
         usdg_out, usdg_info = get_okx_dex_amount_out(USDG, USDC, 10000)
         pyusd_out, pyusd_info = get_okx_dex_amount_out(PYUSD, USDC, 10000)
 
-        msg += "**10000 个输入在 OKX DEX 可得**\n"
+        msg += "**10000 个输入可得**\n"
         msg += f"10000 USDG → {usdg_out if usdg_out else 'N/A'} USDC  ({usdg_info})\n"
         msg += f"10000 PYUSD → {pyusd_out if pyusd_out else 'N/A'} USDC  ({pyusd_info})\n\n"
 
