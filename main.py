@@ -9,11 +9,12 @@ from telegram import Bot
 load_dotenv()
 
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
+if not WALLET_ADDRESS:
+    raise ValueError("❌ WALLET_ADDRESS 未设置")
+
+WALLET_ADDRESS = WALLET_ADDRESS.lower().strip()
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
-
-if not WALLET_ADDRESS or not TG_BOT_TOKEN or not TG_CHAT_ID:
-    raise ValueError("❌ 请在 Variables 中设置 WALLET_ADDRESS、TG_BOT_TOKEN、TG_CHAT_ID")
 
 THRESHOLD_HIGH = 10000.0
 THRESHOLD_LOW = 9999.0
@@ -22,7 +23,7 @@ tg_bot = Bot(token=TG_BOT_TOKEN)
 
 print("✅ SOL链 OKX DEX 监控 Bot 已启动")
 
-async def get_okx_prices():
+async def get_okx_bid_prices():
     pairs = ["USDC-USDT", "USDG-USDT", "PYUSD-USDT"]
     prices = {}
     for p in pairs:
@@ -35,39 +36,33 @@ async def get_okx_prices():
             prices[p] = "N/A"
     return prices
 
-async def send_alert(msg):
-    await tg_bot.send_message(chat_id=TG_CHAT_ID, text=msg)
-
-async def monitor():
-    while True:
-        try:
-            # Solana 交易监控（简化版）
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getSignaturesForAddress",
-                "params": [WALLET_ADDRESS, {"limit": 10}]
-            }
-            resp = requests.post("https://api.mainnet-beta.solana.com", json=payload).json()
-
-            # 这里可扩展解析具体 swap 金额（目前用示例）
-            # 实际运行时我会帮你加上 Jupiter / OKX DEX swap 解析
-
-            prices = await get_okx_prices()
-            usdc_amount = 10012.34   # ← 实际应从交易解析获得
-
-            if usdc_amount > THRESHOLD_HIGH or usdc_amount < THRESHOLD_LOW:
-                alert = f"""🚨 SOL链 OKX DEX 兑换提醒
+async def send_alert(usdg_usdc, pyusd_usdc):
+    prices = await get_okx_bid_prices()
+    alert = f"""🚨 SOL链 OKX DEX 兑换提醒
 
 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-当前 10000 USDG/PYUSD 可兑换 **{usdc_amount:.2f} USDC**
+
+10000 USDG 可兑换 ≈ {usdg_usdc:.4f} USDC
+10000 PYUSD 可兑换 ≈ {pyusd_usdc:.4f} USDC
 
 OKX CEX 买一价:
 • USDC/USDT : {prices.get('USDC-USDT')}
 • USDG/USDT : {prices.get('USDG-USDT')}
 • PYUSD/USDT: {prices.get('PYUSD-USDT')}
 """
-                await send_alert(alert)
+    await tg_bot.send_message(chat_id=TG_CHAT_ID, text=alert)
+
+async def monitor():
+    while True:
+        try:
+            # 这里实际应解析真实 swap 交易
+            # 目前用示例数据，后面可替换为真实解析
+            usdg_to_usdc = 10005.23   # ← 替换为实际计算的 10000 USDG 兑换 USDC 数量
+            pyusd_to_usdc = 9998.45   # ← 替换为实际计算的 10000 PYUSD 兑换 USDC 数量
+
+            if (usdg_to_usdc > THRESHOLD_HIGH or usdg_to_usdc < THRESHOLD_LOW) or \
+               (pyusd_to_usdc > THRESHOLD_HIGH or pyusd_to_usdc < THRESHOLD_LOW):
+                await send_alert(usdg_to_usdc, pyusd_to_usdc)
 
             await asyncio.sleep(8)
         except Exception as e:
