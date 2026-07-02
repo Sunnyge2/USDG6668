@@ -41,6 +41,19 @@ OKX_API_URL = "https://www.okx.com"
 # ============================================================
 #  初始化 Telegram Bot
 # ============================================================
+# 在 token 使用前加检查
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+if not TELEGRAM_TOKEN:
+    print("❌ 环境变量 TELEGRAM_TOKEN 未设置或为空！")
+    print("请在 Railway 的 Variables 中添加 TELEGRAM_TOKEN=你的Token")
+    exit(1)   # 直接退出，避免重复报错
+
+CHAT_ID = os.environ.get("CHAT_ID")
+if not CHAT_ID:
+    print("❌ 环境变量 CHAT_ID 未设置或为空！")
+    exit(1)
+
+bot = Bot(token=TELEGRAM_TOKEN)
 bot = Bot(token=TELEGRAM_TOKEN)
 
 # ============================================================
