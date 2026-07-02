@@ -11,53 +11,68 @@ INTERVAL = int(os.getenv("INTERVAL", "60"))
 DEX_URL = "https://web3.okx.com/api/v6/dex/aggregator/quote"
 SOLANA_CHAIN = "501"
 
+# Token 地址
+USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+USDG = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+
 CEX_PAIRS = ["USDC-USDT", "USDG-USDT", "PYUSD-USDT"]
+
+def get_dex_amount_out(from_token, to_token, amount_human):
+    """amount_human = 用户输入的数量，例如 10000"""
+    # 大多数稳定币是 6 decimals
+    decimals = 6
+    amount_raw = int(amount_human * (10 ** decimals))
+    
+    params = {
+        "chainIndex": SOLANA_CHAIN,
+        "fromTokenAddress": from_token,
+        "toTokenAddress": to_token,
+        "amount": str(amount_raw),
+        "swapMode": "exactIn"
+    }
+    try:
+        r = requests.get(DEX_URL, params=params, timeout=15).json()
+        if r.get("code") == "0" and r.get("data"):
+            quote = r["data"][0]
+            to_amount_raw = int(quote["toTokenAmount"])
+            to_amount_human = to_amount_raw / (10 ** decimals)
+            return round(to_amount_human, 4)
+        else:
+            print(f"API Error: {r.get('msg')}")
+            return None
+    except Exception as e:
+        print(f"请求异常: {e}")
+        return None
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
-    print("Bot started...")
+    print("Bot 已启动，正在监控...")
 
     while True:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        msg = f"🕒 **OKX 价格监控** ({now})\n\n"
+        msg = f"🕒 **OKX 价格监控报告** ({now})\n\n"
 
-        # === DEX (Solana) ===
-        try:
-            # USDG/USDC
-            r1 = requests.get(DEX_URL, params={
-                "chainIndex": SOLANA_CHAIN,
-                "fromTokenAddress": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",  # USDG
-                "toTokenAddress": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",    # USDC
-                "amount": "100000000",
-                "swapMode": "exactIn"
-            }, timeout=15).json()
-            usdg_price = round(float(r1["data"][0]["toTokenAmount"]) / float(r1["data"][0]["fromTokenAmount"]), 6) if r1.get("data") else None
+        # === DEX 查询（10000 USDG 能换多少 USDC）===
+        usdg_out = get_dex_amount_out(USDG, USDC, 10000)
+        pyusd_out = get_dex_amount_out(PYUSD, USDC, 10000)
 
-            # PYUSD/USDC
-            r2 = requests.get(DEX_URL, params={
-                "chainIndex": SOLANA_CHAIN,
-                "fromTokenAddress": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",  # PYUSD
-                "toTokenAddress": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                "amount": "100000000",
-                "swapMode": "exactIn"
-            }, timeout=15).json()
-            pyusd_price = round(float(r2["data"][0]["toTokenAmount"]) / float(r2["data"][0]["fromTokenAmount"]), 6) if r2.get("data") else None
-
-            msg += "**OKX DEX (Solana)**\n"
-            msg += f"USDG/USDC ≈ {usdg_price}\n"
-            msg += f"PYUSD/USDC ≈ {pyusd_price}\n\n"
-        except Exception as e:
-            msg += f"DEX 获取失败: {e}\n\n"
+        msg += "**OKX DEX (Solana) - 10000 个输入可得**\n"
+        msg += f"10000 USDG → {usdg_out if usdg_out else 'N/A'} USDC\n"
+        msg += f"10000 PYUSD → {pyusd_out if pyusd_out else 'N/A'} USDC\n\n"
 
         # === CEX 买一价 ===
         msg += "**OKX CEX 买一价**\n"
         for pair in CEX_PAIRS:
             try:
                 r = requests.get(f"https://www.okx.com/api/v5/market/books?instId={pair}&sz=1", timeout=10).json()
-                bid = float(r["data"][0]["bids"][0][0]) if r.get("data") else None
-                msg += f"{pair}: {bid}\n"
+                if r.get("code") == "0" and r.get("data"):
+                    bid = float(r["data"][0]["bids"][0][0])
+                    msg += f"{pair} 买一: {bid}\n"
+                else:
+                    msg += f"{pair} 买一: 获取失败\n"
             except:
-                msg += f"{pair}: 获取失败\n"
+                msg += f"{pair} 买一: 异常\n"
 
         try:
             await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
