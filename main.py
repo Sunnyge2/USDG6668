@@ -1,95 +1,83 @@
-import os
 import asyncio
-import time
-from datetime import datetime
-from dotenv import load_dotenv
 import requests
 from telegram import Bot
+import time
+from datetime import datetime
 
-load_dotenv()
+# 配置
+BOT_TOKEN = "你的BOT_TOKEN"
+CHAT_ID = "你的CHAT_ID"  # 整数或字符串
+CHECK_INTERVAL = 60  # 秒，建议 30-60 秒，避免频繁请求
 
-WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
-if not WALLET_ADDRESS:
-    raise ValueError("❌ WALLET_ADDRESS 未设置")
+# Solana DEX Quote API (OKX DEX)
+DEX_QUOTE_URL = "https://web3.okx.com/api/v6/dex/aggregator/quote"
+SOLANA_CHAIN_INDEX = "501"  # Solana
 
-WALLET_ADDRESS = WALLET_ADDRESS.lower().strip()
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
-TG_CHAT_ID = os.getenv("TG_CHAT_ID")
+# CEX 交易对
+CEX_PAIRS = ["USDC-USDT", "USDG-USDT", "PYUSD-USDT"]
 
-THRESHOLD_HIGH = 9000.0   # 超过 9000 提醒
-THRESHOLD_LOW = 9000.0    # 低于 9000 提醒（可改）
+def get_dex_price(from_token, to_token, amount=100000000):  # amount 为最小单位，例如 100 USDC
+    params = {
+        "chainIndex": SOLANA_CHAIN_INDEX,
+        "fromTokenAddress": from_token,
+        "toTokenAddress": to_token,
+        "amount": str(amount),
+        "swapMode": "exactIn"
+    }
+    try:
+        resp = requests.get(DEX_QUOTE_URL, params=params, timeout=10)
+        data = resp.json()
+        if data.get("code") == "0" and data.get("data"):
+            quote = data["data"][0]
+            price = float(quote["toTokenAmount"]) / float(quote["fromTokenAmount"])  # 近似价格
+            return round(price, 6)
+        return None
+    except Exception as e:
+        print(f"DEX 请求失败: {e}")
+        return None
 
-tg_bot = Bot(token=TG_BOT_TOKEN)
+def get_cex_buy_one(inst_id):  # 如 "USDC-USDT"
+    url = f"https://www.okx.com/api/v5/market/books?instId={inst_id}&sz=1"
+    try:
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        if data.get("code") == "0" and data.get("data"):
+            bids = data["data"][0].get("bids", [])
+            if bids:
+                return float(bids[0][0])  # 买一价
+        return None
+    except Exception as e:
+        print(f"CEX 请求失败: {e}")
+        return None
 
-print("✅ SOL链 OKX DEX 监控 Bot 已启动（阈值 9000）")
-
-async def get_okx_bid_prices():
-    pairs = ["USDC-USDT", "USDG-USDT", "PYUSD-USDT"]
-    prices = {}
-    for p in pairs:
-        try:
-            r = requests.get(f"https://www.okx.com/api/v5/market/ticker?instId={p}")
-            data = r.json()
-            if data.get('code') == '0':
-                prices[p] = float(data['data'][0]['bidPx'])
-        except:
-            prices[p] = "N/A"
-    return prices
-
-async def send_alert(usdg_usdc, pyusd_usdc):
-    prices = await get_okx_bid_prices()
-    alert = f"""🚨 SOL链 OKX DEX 兑换提醒
-
-时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-10000 USDG 实际兑换 ≈ {usdg_usdc:.4f} USDC
-10000 PYUSD 实际兑换 ≈ {pyusd_usdc:.4f} USDC
-
-OKX CEX 买一价:
-• USDC/USDT : {prices.get('USDC-USDT')}
-• USDG/USDT : {prices.get('USDG-USDT')}
-• PYUSD/USDT: {prices.get('PYUSD-USDT')}
-"""
-    await tg_bot.send_message(chat_id=TG_CHAT_ID, text=alert)
-
-async def monitor():
-    last_signature = None
+async def monitor_prices(bot: Bot):
     while True:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        message = f"🕒 **价格监控报告** ({now})\n\n"
+
+        # DEX 价格 (Solana)
+        usdg_usdc = get_dex_price("2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        pyusd_usdc = get_dex_price("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        
+        message += "**OKX DEX (Solana)**\n"
+        message += f"USDG/USDC: {usdg_usdc if usdg_usdc else 'N/A'}\n"
+        message += f"PYUSD/USDC: {pyusd_usdc if pyusd_usdc else 'N/A'}\n\n"
+
+        # CEX 买一价
+        message += "**OKX CEX 买一价**\n"
+        for pair in CEX_PAIRS:
+            price = get_cex_buy_one(pair)
+            message += f"{pair}: {price if price else 'N/A'}\n"
+
+        # 发送消息
         try:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getSignaturesForAddress",
-                "params": [WALLET_ADDRESS, {"limit": 15}]
-            }
-            resp = requests.post("https://api.mainnet-beta.solana.com", json=payload).json()
-
-            if 'result' in resp and resp['result']:
-                for sig in resp['result']:
-                    if last_signature and sig['signature'] == last_signature:
-                        break
-
-                    tx_payload = {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "getTransaction",
-                        "params": [sig['signature'], {"encoding": "jsonParsed"}]
-                    }
-                    tx_resp = requests.post("https://api.mainnet-beta.solana.com", json=tx_payload).json()
-
-                    usdg_usdc = 10005.0   # 实际解析位置
-                    pyusd_usdc = 9995.0
-
-                    if (usdg_usdc > THRESHOLD_HIGH or usdg_usdc < THRESHOLD_LOW) or \
-                       (pyusd_usdc > THRESHOLD_HIGH or pyusd_usdc < THRESHOLD_LOW):
-                        await send_alert(usdg_usdc, pyusd_usdc)
-
-                    last_signature = sig['signature']
-
-            await asyncio.sleep(8)
+            await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="Markdown")
+            print("报告已发送")
         except Exception as e:
-            print(f"错误: {e}")
-            await asyncio.sleep(10)
+            print(f"发送失败: {e}")
+
+        await asyncio.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    asyncio.run(monitor())
+    bot = Bot(token=BOT_TOKEN)
+    asyncio.run(monitor_prices(bot))
