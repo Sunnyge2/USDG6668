@@ -12,7 +12,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 INTERVAL = int(os.getenv("INTERVAL", "60"))
 
-# OKX 配置
 OKX_API_KEY = os.getenv("OKX_API_KEY")
 OKX_API_SECRET = os.getenv("OKX_API_SECRET")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE")
@@ -26,16 +25,15 @@ PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 
 CEX_PAIRS = ["USDC-USDT", "USDG-USDT", "PYUSD-USDT"]
 
-def get_okx_signature(method, request_path):
+def get_signature(method, request_path):
     timestamp = str(int(time.time() * 1000))
     message = timestamp + method + request_path
-    mac = hmac.new(OKX_API_SECRET.encode('utf-8'), message.encode('utf-8'), hashlib.sha256)
-    signature = base64.b64encode(mac.digest()).decode('utf-8')
-    return timestamp, signature
+    mac = hmac.new(OKX_API_SECRET.encode(), message.encode(), hashlib.sha256)
+    return timestamp, base64.b64encode(mac.digest()).decode()
 
 def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
     decimals = 6
-    amount_raw = str(int(amount_human * 10**decimals))
+    amount_raw = str(int(amount_human * 10 ** decimals))
     
     params = {
         "chainIndex": SOLANA_CHAIN,
@@ -47,11 +45,11 @@ def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
         "priceImpactProtectionPercent": "100"
     }
     
-    # 构造用于签名的完整 path
+    # 构造 query string（排序）
     query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
     request_path = f"/api/v6/dex/aggregator/quote?{query_string}"
     
-    timestamp, signature = get_okx_signature("GET", request_path)
+    timestamp, signature = get_signature("GET", request_path)
     
     headers = {
         "OK-ACCESS-KEY": OKX_API_KEY,
@@ -62,9 +60,7 @@ def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
     }
     
     try:
-        resp = requests.get(DEX_URL, params=params, headers=headers, timeout=20)
-        r = resp.json()
-        
+        r = requests.get(DEX_URL, params=params, headers=headers, timeout=20).json()
         if r.get("code") == "0" and r.get("data"):
             quote = r["data"][0]
             to_amount = int(quote.get("toTokenAmount") or 0) / (10 ** decimals)
@@ -77,7 +73,7 @@ def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
-    print("Bot 启动 - OKX DEX 签名版 v2")
+    print("Bot 启动 - 签名修正版 (匹配官方示例)")
 
     while True:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
