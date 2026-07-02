@@ -16,29 +16,39 @@ OKX_API_KEY = os.getenv("OKX_API_KEY")
 OKX_API_SECRET = os.getenv("OKX_API_SECRET")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE")
 
-PRICE_URL = "https://web3.okx.com/api/v6/dex/index/current-price"
+DEX_URL = "https://web3.okx.com/api/v6/dex/aggregator/quote"
 
+SOLANA_CHAIN = "501"
 USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDG = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
 PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 
 CEX_PAIRS = ["USDC-USDT", "USDG-USDT", "PYUSD-USDT"]
 
-def get_signature(method, request_path, body=""):
+def get_signature(method, request_path):
     timestamp = str(int(time.time() * 1000))
-    message = timestamp + method + request_path + body
+    message = timestamp + method + request_path
     mac = hmac.new(OKX_API_SECRET.encode(), message.encode(), hashlib.sha256)
     return timestamp, base64.b64encode(mac.digest()).decode()
 
-def get_token_price(token_address):
-    body = [{
-        "chainIndex": "501",
-        "tokenContractAddress": token_address
-    }]
-    body_str = str(body).replace("'", '"')  # 转成 JSON 字符串格式
+def get_okx_dex_amount_out(from_token, to_token, amount_human=10000):
+    decimals = 6
+    amount_raw = str(int(amount_human * 10**decimals))
     
-    request_path = "/api/v6/dex/index/current-price"
-    timestamp, signature = get_signature("POST", request_path, body_str)
+    params = {
+        "chainIndex": SOLANA_CHAIN,
+        "fromTokenAddress": from_token,
+        "toTokenAddress": to_token,
+        "amount": amount_raw,
+        "swapMode": "exactIn",
+        "directRoute": "true",
+        "priceImpactProtectionPercent": "100"
+    }
+    
+    query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+    request_path = f"/api/v6/dex/aggregator/quote?{query_string}"
+    
+    timestamp, signature = get_signature("GET", request_path)
     
     headers = {
         "OK-ACCESS-KEY": OKX_API_KEY,
@@ -49,32 +59,32 @@ def get_token_price(token_address):
     }
     
     try:
-        r = requests.post(PRICE_URL, json=body, headers=headers, timeout=20).json()
+        r = requests.get(DEX_URL, params=params, headers=headers, timeout=20).json()
+        print("API Response:", r)  # 调试用
         if r.get("code") == "0" and r.get("data"):
-            return float(r["data"][0]["price"])
+            quote = r["data"][0]
+            to_amount = int(quote.get("toTokenAmount") or 0) / (10 ** decimals)
+            route = quote.get("dexRouterList", [{}])[0].get("dexName", "OKX")
+            return round(to_amount, 4), route
         else:
-            return None
-    except:
-        return None
+            return None, r.get("msg", f"Code: {r.get('code')}")
+    except Exception as e:
+        return None, str(e)
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
-    print("Bot 启动 - 使用 current-price 接口")
+    print("Bot 启动 - 带Key签名版")
 
     while True:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         msg = f"🕒 **OKX DEX 报价报告** ({now})\n\n"
 
-        usdg_price = get_token_price(USDG)
-        pyusd_price = get_token_price(PYUSD)
-        usdc_price = get_token_price(USDC) or 1.0
+        usdg_out, usdg_info = get_okx_dex_amount_out(USDG, USDC, 10000)
+        pyusd_out, pyusd_info = get_okx_dex_amount_out(PYUSD, USDC, 10000)
 
-        usdg_out = round(10000 * (usdg_price or 0) / usdc_price, 4) if usdg_price else None
-        pyusd_out = round(10000 * (pyusd_price or 0) / usdc_price, 4) if pyusd_price else None
-
-        msg += "**10000 个输入可得 USDC（估算）**\n"
-        msg += f"10000 USDG → {usdg_out if usdg_out else 'N/A'} USDC  (USDG价格: {usdg_price})\n"
-        msg += f"10000 PYUSD → {pyusd_out if pyusd_out else 'N/A'} USDC  (PYUSD价格: {pyusd_price})\n\n"
+        msg += "**10000 个输入可得**\n"
+        msg += f"10000 USDG → {usdg_out if usdg_out else 'N/A'} USDC  ({usdg_info})\n"
+        msg += f"10000 PYUSD → {pyusd_out if pyusd_out else 'N/A'} USDC  ({pyusd_info})\n\n"
 
         msg += "**OKX CEX 买一价**\n"
         for pair in CEX_PAIRS:
